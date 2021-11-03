@@ -14,6 +14,7 @@ type pool struct {
 }
 
 func (p *pool) Get(ctx context.Context) (redsyncredis.Conn, error) {
+	// 客户端代理
 	c := p.delegate
 	if ctx != nil {
 		c = c.WithContext(ctx)

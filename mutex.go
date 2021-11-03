@@ -11,9 +11,11 @@ import (
 )
 
 // A DelayFunc is used to decide the amount of time to wait between retries.
+// DelayFunc是用来决定重试之间的等待时间
 type DelayFunc func(tries int) time.Duration
 
 // A Mutex is a distributed mutual exclusion lock.
+// Mutex是一个分布式互斥锁。
 type Mutex struct {
 	name   string
 	expiry time.Duration
@@ -28,26 +30,30 @@ type Mutex struct {
 	genValueFunc func() (string, error)
 	value        string
 	until        time.Time
-
+	// 多个redis锁池
 	pools []redis.Pool
 }
 
 // Name returns mutex name (i.e. the Redis key).
+// Name返回Mutex的名称（即redis的key）
 func (m *Mutex) Name() string {
 	return m.name
 }
 
 // Value returns the current random value. The value will be empty until a lock is acquired (or WithValue option is used).
+// Value返回当前的随机值,该值将是空的,直到获得一个锁（或使用WithValue选项）。
 func (m *Mutex) Value() string {
 	return m.value
 }
 
 // Until returns the time of validity of acquired lock. The value will be zero value until a lock is acquired.
+// Until 返回获得锁的有效时间,该值将是零值,直到获得锁.
 func (m *Mutex) Until() time.Time {
 	return m.until
 }
 
 // Lock locks m. In case it returns an error on failure, you may retry to acquire the lock by calling this method again.
+// 如果它在失败时返回一个错误，你可以通过再次调用这个方法来重试获取锁(此方法会调用LockContext)
 func (m *Mutex) Lock() error {
 	return m.LockContext(nil)
 }
@@ -60,20 +66,25 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 	}
 
 	for i := 0; i < m.tries; i++ {
+		// 不是第一次尝试获取锁
 		if i != 0 {
 			time.Sleep(m.delayFunc(i))
 		}
-
+		// 获取当前时间（未获取锁）
 		start := time.Now()
 
+		// 统计获取锁的成功次数和error
 		n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+			// 获取锁
 			return m.acquire(ctx, pool, value)
 		})
 		if n == 0 && err != nil {
 			return err
 		}
 
+		// 获取当前时间（已获取锁）
 		now := time.Now()
+		// 设置有效时间（有效获取锁的最小时间为TTL-(T2-T1)-时钟漂移）
 		until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.factor)))
 		if n >= m.quorum && now.Before(until) {
 			m.value = value
@@ -89,6 +100,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 }
 
 // Unlock unlocks m and returns the status of unlock.
+// Unlock解锁m并返回解锁状态。
 func (m *Mutex) Unlock() (bool, error) {
 	return m.UnlockContext(nil)
 }
@@ -96,6 +108,7 @@ func (m *Mutex) Unlock() (bool, error) {
 // UnlockContext unlocks m and returns the status of unlock.
 func (m *Mutex) UnlockContext(ctx context.Context) (bool, error) {
 	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		// 释放锁
 		return m.release(ctx, pool, m.value)
 	})
 	if n < m.quorum {
@@ -105,6 +118,7 @@ func (m *Mutex) UnlockContext(ctx context.Context) (bool, error) {
 }
 
 // Extend resets the mutex's expiry and returns the status of expiry extension.
+// Extend重置了mutex的过期，并返回过期扩展的状态。(重新设置锁过期值)
 func (m *Mutex) Extend() (bool, error) {
 	return m.ExtendContext(nil)
 }
@@ -174,11 +188,14 @@ func genValue() (string, error) {
 }
 
 func (m *Mutex) acquire(ctx context.Context, pool redis.Pool, value string) (bool, error) {
+	// 创建连接
 	conn, err := pool.Get(ctx)
 	if err != nil {
 		return false, err
 	}
+	// 关闭连接
 	defer conn.Close()
+	// 设置redis过期时间返回false or true
 	reply, err := conn.SetNX(m.name, value, m.expiry)
 	if err != nil {
 		return false, err
@@ -186,6 +203,7 @@ func (m *Mutex) acquire(ctx context.Context, pool redis.Pool, value string) (boo
 	return reply, nil
 }
 
+// lua删除脚本
 var deleteScript = redis.NewScript(1, `
 	if redis.call("GET", KEYS[1]) == ARGV[1] then
 		return redis.call("DEL", KEYS[1])
@@ -200,6 +218,7 @@ func (m *Mutex) release(ctx context.Context, pool redis.Pool, value string) (boo
 		return false, err
 	}
 	defer conn.Close()
+	// 通过lua脚本删除锁
 	status, err := conn.Eval(deleteScript, m.name, value)
 	if err != nil {
 		return false, err
@@ -235,13 +254,16 @@ func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, erro
 	}
 
 	ch := make(chan result)
+	// 遍历redis.Pool切片
 	for _, pool := range m.pools {
+		// 开启异步线程,写入获取设置锁结果
 		go func(pool redis.Pool) {
 			r := result{}
 			r.Status, r.Err = actFn(pool)
 			ch <- r
 		}(pool)
 	}
+	// 开始统计成功次数
 	n := 0
 	var err error
 	for range m.pools {

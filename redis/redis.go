@@ -14,6 +14,7 @@ type Pool interface {
 }
 
 // Conn is a single Redis connection.
+// 单个redis连接connect
 type Conn interface {
 	Get(name string) (string, error)
 	Set(name string, value string) (bool, error)
@@ -25,6 +26,7 @@ type Conn interface {
 
 // Script encapsulates the source, hash and key count for a Lua script.
 // Taken from https://github.com/gomodule/redigo/blob/46992b0f02f74066bcdfd9b03e33bc03abd10dc7/redis/script.go#L24-L30
+// 脚本封装了一个Lua脚本的源、哈希和键数
 type Script struct {
 	KeyCount int
 	Src      string
